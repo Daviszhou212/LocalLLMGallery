@@ -1,6 +1,5 @@
 # LocalLLMGallery
 
-[![CI](https://github.com/Daviszhou212/LocalLLMGallery/actions/workflows/ci.yml/badge.svg)](https://github.com/Daviszhou212/LocalLLMGallery/actions/workflows/ci.yml)
 [![Node.js >=18](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Platform Windows](https://img.shields.io/badge/platform-windows-0078D6?logo=windows&logoColor=white)](#快速开始quick-start)
 
@@ -19,7 +18,6 @@ This project is a local image-generation console for OpenAI-compatible APIs, wit
 - [本地 API / Local API](#本地-api--local-api)
 - [安全说明 / Security Notes](#安全说明--security-notes)
 - [开发与质量 / Development & Quality](#开发与质量--development--quality)
-- [CI 流程 / CI Workflow](#ci-流程--ci-workflow)
 - [常见问题 / FAQ](#常见问题--faq)
 - [许可证 / License](#许可证--license)
 
@@ -57,15 +55,11 @@ This project is a local image-generation console for OpenAI-compatible APIs, wit
 - Frontend: Vanilla HTML/CSS/JavaScript
 - Test: Node test runner (`node --test`) + `supertest`
 - Lint/Format: `eslint`, `prettier`
-- CI: GitHub Actions（Windows runner + Node 20）
 
 ## 目录结构 / Project Structure
 
 ```text
 .
-├── .github/
-│   └── workflows/
-│       └── ci.yml
 ├── public/
 │   ├── index.html
 │   ├── styles.css
@@ -214,17 +208,6 @@ npm run format:check
 
 建议在每次提交前执行上述命令。  
 Run these checks before each commit.
-
-## CI 流程 / CI Workflow
-
-CI 文件：`.github/workflows/ci.yml`  
-触发条件：`push`、`pull_request`  
-执行内容：
-
-- Syntax check
-- Lint
-- Test
-- Format check
 
 ## 常见问题 / FAQ
 
