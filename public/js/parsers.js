@@ -38,6 +38,42 @@ export function parseImagesGeneration(data, baseUrl) {
   return normalizeParsedImages(dedupeImages(images), baseUrl);
 }
 
+export function consumeSseTextBuffer(previousBuffer, incomingChunk) {
+  const merged = `${String(previousBuffer || "")}${String(incomingChunk || "")}`;
+  if (!merged) {
+    return { events: [], buffer: "" };
+  }
+
+  const segments = merged.split(/\r?\n\r?\n/);
+  const buffer = segments.pop() || "";
+  const events = [];
+
+  segments.forEach((segment) => {
+    const parsed = parseSseSegment(segment);
+    if (parsed) {
+      events.push(parsed);
+    }
+  });
+
+  return { events, buffer };
+}
+
+export function extractImagesFromStreamEvent(event, baseUrl) {
+  const payload =
+    event && event.data && typeof event.data === "object"
+      ? event.data
+      : event && typeof event === "object"
+        ? event
+        : null;
+  if (!payload) {
+    return [];
+  }
+
+  const output = [];
+  collectStreamPayloadImages(payload, output);
+  return normalizeParsedImages(dedupeImages(output), baseUrl);
+}
+
 export function normalizeImageUrl(rawUrl, baseUrl) {
   const text = String(rawUrl || "").trim();
   if (!text) {
@@ -192,6 +228,89 @@ function collectFromPlainUrls(text, output) {
   const plainUrlPattern = /\bhttps?:\/\/[^\s)]+/g;
   const matches = text.match(plainUrlPattern) || [];
   matches.forEach((url) => output.push({ url, source: "content" }));
+}
+
+function parseSseSegment(segment) {
+  const lines = String(segment || "").split(/\r?\n/);
+  let event = "message";
+  const dataLines = [];
+
+  lines.forEach((line) => {
+    const text = String(line || "").trimEnd();
+    if (!text || text.startsWith(":")) {
+      return;
+    }
+    if (text.startsWith("event:")) {
+      const name = text.slice(6).trim();
+      if (name) {
+        event = name;
+      }
+      return;
+    }
+    if (text.startsWith("data:")) {
+      dataLines.push(text.slice(5).trim());
+    }
+  });
+
+  if (!dataLines.length) {
+    return null;
+  }
+
+  const rawData = dataLines.join("\n").trim();
+  if (!rawData || rawData === "[DONE]") {
+    return null;
+  }
+
+  let data = null;
+  try {
+    data = JSON.parse(rawData);
+  } catch {
+    data = null;
+  }
+
+  return { event, rawData, data };
+}
+
+function collectStreamPayloadImages(payload, output) {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  appendImageUrl(output, payload.url, "stream");
+  appendImageBase64(output, payload.b64_json, "stream");
+  appendImageBase64(output, payload.base64, "stream");
+
+  if (Array.isArray(payload.data)) {
+    payload.data.forEach((item) => {
+      if (!item || typeof item !== "object") {
+        return;
+      }
+      appendImageUrl(output, item.url, "stream");
+      appendImageBase64(output, item.b64_json, "stream");
+      appendImageBase64(output, item.base64, "stream");
+    });
+  }
+
+  if (payload.image && typeof payload.image === "object") {
+    appendImageUrl(output, payload.image.url, "stream");
+    appendImageBase64(output, payload.image.b64_json, "stream");
+    appendImageBase64(output, payload.image.base64, "stream");
+  }
+}
+
+function appendImageUrl(output, url, source) {
+  if (typeof url === "string" && url.trim()) {
+    output.push({ url: url.trim(), source });
+  }
+}
+
+function appendImageBase64(output, b64, source) {
+  if (typeof b64 === "string" && b64.trim()) {
+    output.push({
+      url: `data:image/png;base64,${b64.trim()}`,
+      source,
+    });
+  }
 }
 
 function dedupeImages(images) {

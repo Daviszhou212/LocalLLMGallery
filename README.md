@@ -242,6 +242,13 @@ Run these checks before each commit.
 - 检查体积和超时限制
 - 受限内网地址会被拦截
 
-## 许可证 / License
+## 瀑布流模式 / Waterfall Mode
+
+1. 选择 `mode=waterfall` 可进入连续出图模式，结果区按流式事件增量追加，不会每次全量重绘。
+2. `waterfallType=generation` 使用 grok2api 的 `imagine start + ws`，`auto` 会在 WS 建连失败时自动回退到 SSE。
+3. `waterfallType=edit` 调用 `/v1/images/edits`，以 `multipart/form-data` 提交 `image` 文件，并附带 `stream=true` 进行 SSE 增量编辑。
+4. 点击“停止瀑布流”会关闭本地连接；在 generation 场景还会调用 `/api/v1/admin/imagine/stop` 清理远端任务。
+
+## 许可协议 / License
 
 `License TBD`

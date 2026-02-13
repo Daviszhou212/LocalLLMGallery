@@ -28,6 +28,7 @@
               <option value="chat">chat/completions</option>
               <option value="images">images/generations</option>
               <option value="image-edit">images/edits</option>
+              <option value="waterfall">waterfall</option>
             </select>
           </div>
 
@@ -128,6 +129,50 @@
             </div>
           </fieldset>
 
+          <fieldset class="group mode-waterfall-only" hidden>
+            <legend>waterfall 设置</legend>
+
+            <div class="row">
+              <label for="waterfallType">任务类型</label>
+              <select id="waterfallType" name="waterfallType">
+                <option value="generation">生图（admin imagine）</option>
+                <option value="edit">图像编辑（/images/edits stream）</option>
+              </select>
+              <small class="field-hint">
+                generation 使用 WS 优先并自动回退 SSE；edit 使用 SSE 流式返回。
+              </small>
+            </div>
+
+            <div class="row mode-waterfall-generate-only">
+              <label for="waterfallAspectRatio">宽高比</label>
+              <select id="waterfallAspectRatio" name="waterfallAspectRatio">
+                <option value="2:3">2:3</option>
+                <option value="1:1">1:1</option>
+                <option value="3:2">3:2</option>
+                <option value="16:9">16:9</option>
+                <option value="9:16">9:16</option>
+              </select>
+            </div>
+
+            <div class="row mode-waterfall-generate-only">
+              <label for="waterfallTransport">连接模式</label>
+              <select id="waterfallTransport" name="waterfallTransport">
+                <option value="auto">auto（WS 失败回退 SSE）</option>
+                <option value="ws">ws</option>
+                <option value="sse">sse</option>
+              </select>
+            </div>
+
+            <div class="row mode-waterfall-generate-only">
+              <label for="waterfallConcurrency">并发任务数</label>
+              <select id="waterfallConcurrency" name="waterfallConcurrency">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+            </div>
+          </fieldset>
+
           <fieldset class="group">
             <legend>基础参数</legend>
             <div class="row">
@@ -179,6 +224,7 @@
 
           <div class="actions">
             <button id="submit-btn" type="submit">生成图像</button>
+            <button id="stop-btn" type="button" class="ghost danger" hidden>停止瀑布流</button>
             <button id="clear-btn" type="button" class="ghost">清空结果</button>
             <button id="reset-btn" type="button" class="ghost">恢复默认</button>
           </div>

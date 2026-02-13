@@ -13,6 +13,10 @@ export const DEFAULTS = {
   modelSelected: "",
   editInputType: "url",
   editImageUrl: "",
+  waterfallType: "generation",
+  waterfallTransport: "auto",
+  waterfallConcurrency: "1",
+  waterfallAspectRatio: "2:3",
   prompt: "",
   size: "1024x1024",
   n: 1,
@@ -30,11 +34,28 @@ export function hydrateFromStorage() {
   }
 
   const merged = { ...DEFAULTS, ...saved };
+  if (!["chat", "images", "image-edit", "waterfall"].includes(merged.mode)) {
+    merged.mode = DEFAULTS.mode;
+  }
   if (!merged.rememberApiKey) {
     merged.apiKey = DEFAULTS.apiKey;
   }
   if (merged.editInputType !== "upload") {
     merged.editInputType = "url";
+  }
+  if (!["generation", "edit"].includes(merged.waterfallType)) {
+    merged.waterfallType = DEFAULTS.waterfallType;
+  }
+  if (!["auto", "ws", "sse"].includes(merged.waterfallTransport)) {
+    merged.waterfallTransport = DEFAULTS.waterfallTransport;
+  }
+  if (!["1", "2", "3"].includes(String(merged.waterfallConcurrency))) {
+    merged.waterfallConcurrency = DEFAULTS.waterfallConcurrency;
+  } else {
+    merged.waterfallConcurrency = String(merged.waterfallConcurrency);
+  }
+  if (!["2:3", "1:1", "3:2", "16:9", "9:16"].includes(merged.waterfallAspectRatio)) {
+    merged.waterfallAspectRatio = DEFAULTS.waterfallAspectRatio;
   }
   merged.editImageUrl = typeof merged.editImageUrl === "string" ? merged.editImageUrl : "";
   merged.proxyBaseUrl = migrateProxyBaseUrl(merged.proxyBaseUrl);

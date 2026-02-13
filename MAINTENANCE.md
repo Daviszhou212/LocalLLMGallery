@@ -291,3 +291,24 @@ npm run lint
 npm run test
 npm run format:check
 ```
+
+## 11. 瀑布流维护补充（grok2api）
+
+### 11.1 功能说明
+
+- 前端新增 `mode=waterfall`，支持两类任务：
+  - `generation`：`POST /api/v1/admin/imagine/start` + `WS /api/v1/admin/imagine/ws`，失败自动回退 `GET /api/v1/admin/imagine/sse`。
+  - `edit`：`POST /v1/images/edits`，以 `multipart/form-data` 发送 `image` 文件并附带 `stream=true`，按 SSE 增量渲染。
+
+### 11.2 维护检查点
+
+- `generation` 模式下确认 `Base URL` 对应 `grok2api` 的 `/v1` 路径，且 `API Key` 有 admin imagine 接口权限。
+- 若 WS 长时间无法建立，优先切换 `waterfall` 连接模式为 `sse` 验证链路。
+- 停止瀑布流时应看到前端连接关闭；`generation` 还会请求 `POST /api/v1/admin/imagine/stop` 清理远端任务。
+
+### 11.3 常见故障
+
+- 症状：`waterfall` 无图但无报错。  
+  排查：检查浏览器网络中 `imagine/start` 是否返回 `task_id`，再看 `ws/sse` 是否持续收到 `type=image`。
+- 症状：`waterfall edit` 立即 `400 Field required`。  
+  排查：确认请求为 `multipart/form-data` 且文件字段名是 `image`（不是 `image_url`）。

@@ -183,6 +183,10 @@ label {
   border-style: dashed;
 }
 
+.mode-waterfall-only {
+  border-style: dashed;
+}
+
 .edit-image-preview {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -248,7 +252,7 @@ textarea:focus {
 
 .actions {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 

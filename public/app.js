@@ -1,7 +1,9 @@
-import { requestJson, buildReadableError, buildAuthHeaders } from "./js/api.js";
+import { requestJson, normalizeHttpError, buildReadableError, buildAuthHeaders } from "./js/api.js";
 import {
   parseChatImages,
   parseImagesGeneration,
+  consumeSseTextBuffer,
+  extractImagesFromStreamEvent,
   normalizeImageUrl,
   sanitizeBaseUrl,
   uniqueStrings,
@@ -45,8 +47,13 @@ const els = {
   temperature: document.getElementById("temperature"),
   guidance: document.getElementById("guidance"),
   submitBtn: document.getElementById("submit-btn"),
+  stopBtn: document.getElementById("stop-btn"),
   clearBtn: document.getElementById("clear-btn"),
   resetBtn: document.getElementById("reset-btn"),
+  waterfallType: document.getElementById("waterfallType"),
+  waterfallTransport: document.getElementById("waterfallTransport"),
+  waterfallConcurrency: document.getElementById("waterfallConcurrency"),
+  waterfallAspectRatio: document.getElementById("waterfallAspectRatio"),
   refreshGalleryBtn: document.getElementById("refresh-gallery-btn"),
   tabBtns: Array.from(document.querySelectorAll(".tab-btn")),
   resultsView: document.getElementById("results-view"),
@@ -78,6 +85,19 @@ const state = {
   editModels: [],
   preferredModel: "",
   editImageDataUrl: "",
+  resultItems: [],
+  resultUrlSet: new Set(),
+  waterfallRunning: false,
+  waterfallStreamSource: "",
+  waterfallTaskIds: [],
+  waterfallWsConnections: [],
+  waterfallSseConnections: [],
+  waterfallEditAbortController: null,
+  waterfallFallbackTimer: null,
+  waterfallPending: false,
+  waterfallStartToken: "",
+  waterfallBaseUrl: "",
+  waterfallAdminBaseUrl: "",
 };
 
 const previewController = createPreviewController(els, {
@@ -125,6 +145,9 @@ function init() {
 function bindEvents() {
   els.form.addEventListener("submit", onSubmit);
   els.connectBtn.addEventListener("click", onConnectModels);
+  els.stopBtn.addEventListener("click", () => {
+    void stopWaterfall({ reason: "manual-stop" });
+  });
   els.clearBtn.addEventListener("click", clearResults);
   els.resetBtn.addEventListener("click", resetDefaults);
   els.refreshGalleryBtn.addEventListener("click", galleryController.loadGallery);
@@ -144,6 +167,10 @@ function bindEvents() {
     els.modelManual,
     els.editInputType,
     els.editImageUrl,
+    els.waterfallType,
+    els.waterfallTransport,
+    els.waterfallConcurrency,
+    els.waterfallAspectRatio,
     els.prompt,
     els.size,
     els.n,
@@ -158,6 +185,7 @@ function bindEvents() {
   });
 
   els.mode.addEventListener("change", updateModeUI);
+  els.waterfallType.addEventListener("change", updateModeUI);
   els.modelSelect.addEventListener("change", () => {
     if (els.modelSelect.value) {
       els.modelManual.value = "";
@@ -227,7 +255,7 @@ async function onConnectModels() {
     if (!resolveModelValue()) {
       const firstEditModel = state.editModels[0] || "";
       els.modelSelect.value =
-        els.mode.value === "image-edit" && firstEditModel ? firstEditModel : models[0];
+        shouldShowImageEditControls() && firstEditModel ? firstEditModel : models[0];
     }
     state.preferredModel = resolveModelValue();
     updateModelHint();
@@ -243,49 +271,64 @@ async function onConnectModels() {
 
 async function onSubmit(event) {
   event.preventDefault();
-  if (state.isSubmitting) {
+  if (state.isSubmitting || state.waterfallPending || state.waterfallRunning) {
     return;
   }
 
   clearError();
-  setSubmitting(true);
-
   const form = collectFormValues();
-  if (!form.model) {
+  const requiresModel = form.mode !== "waterfall" || form.waterfallType === "edit";
+  const requiresEditInput =
+    form.mode === "image-edit" || (form.mode === "waterfall" && form.waterfallType === "edit");
+
+  if (requiresModel && !form.model) {
     setError("请先选择模型或手动输入模型名。");
-    setStatus("缺少模型参数。");
-    setSubmitting(false);
+    setStatus("缺少 model 参数。");
     return;
   }
   if (!form.prompt) {
     setError("prompt 不能为空。");
     setStatus("缺少 prompt 参数。");
-    setSubmitting(false);
     return;
   }
-  if (form.mode === "image-edit") {
+  if (requiresEditInput) {
     if (!hasAvailableEditModels()) {
-      setError("当前模型列表中没有可用的 image-edit 模型（名称需包含 edit）。");
+      setError("当前模型列表中没有可用的 edit 模型。");
       setStatus("image-edit 不可用：请连接包含 edit 模型的服务。");
-      setSubmitting(false);
       return;
     }
     if (!modelSupportsImageEdit(form.model)) {
       setError("当前模型不支持 image-edit，请选择名称包含 edit 的模型。");
       setStatus("image-edit 校验失败：模型不匹配。");
-      setSubmitting(false);
       return;
     }
     if (!form.editImageSource) {
       setError("image-edit 需要提供原图 URL 或上传文件。");
       setStatus("缺少 image-edit 原图参数。");
-      setSubmitting(false);
       return;
     }
   }
 
-  const endpoint = buildEndpoint(form.baseUrl, form.mode);
+  if (form.mode === "waterfall") {
+    state.waterfallPending = true;
+    updateSubmitAvailability();
+    updateStopButtonVisibility();
+    try {
+      await startWaterfall(form);
+    } catch (error) {
+      setError(buildReadableError(error));
+      setStatus("瀑布流启动失败。");
+      console.error(error);
+    } finally {
+      state.waterfallPending = false;
+      updateSubmitAvailability();
+      updateStopButtonVisibility();
+    }
+    return;
+  }
 
+  const endpoint = buildEndpoint(form.baseUrl, form.mode);
+  setSubmitting(true);
   try {
     const requestOptions = await buildRequestOptions(form);
     setStatus(`请求发送中：${endpoint}`);
@@ -311,60 +354,121 @@ async function onSubmit(event) {
 }
 
 function renderResults(images) {
+  state.resultItems = [];
+  state.resultUrlSet = new Set();
   els.results.innerHTML = "";
-  els.resultCount.textContent = `${images.length} 张`;
+  appendResults(images);
+}
 
-  const previewItems = images.map((item, index) => ({
-    url: item.url,
-    source: item.source || "result",
-    label: `结果 #${index + 1}`,
-    origin: "results",
-  }));
+function appendResults(images) {
+  const list = Array.isArray(images) ? images : [];
+  if (!list.length) {
+    updateResultCount();
+    return 0;
+  }
 
   const fragment = document.createDocumentFragment();
-  images.forEach((item, index) => {
-    const card = els.imageCardTemplate.content.firstElementChild.cloneNode(true);
-    const imageWrap = card.querySelector(".image-wrap");
-    const img = card.querySelector("img");
-    const sourceTag = card.querySelector(".source-tag");
-    const imageIndex = card.querySelector(".image-index");
-    const downloadBtn = card.querySelector(".download-btn");
-    const copyBtn = card.querySelector(".copy-btn");
-    const saveBtn = card.querySelector(".save-btn");
+  let appended = 0;
 
-    previewController.makePreviewTargetInteractive(imageWrap, previewItems, index);
-    img.src = item.url;
-    sourceTag.textContent = item.source;
-    imageIndex.textContent = `#${index + 1}`;
-
-    downloadBtn.addEventListener("click", async () => {
-      try {
-        await downloadImage(item.url, `result-${index + 1}`);
-        setStatus(`已下载第 ${index + 1} 张图。`);
-      } catch (error) {
-        setError(`下载失败：${buildReadableError(error)}`);
-      }
-    });
-
-    if (item.url.startsWith("data:image/")) {
-      copyBtn.disabled = true;
-      copyBtn.title = "data URL 不适合复制为外链。";
-    } else {
-      copyBtn.addEventListener("click", async () => {
-        try {
-          await copyText(item.url);
-          setStatus(`已复制第 ${index + 1} 张图链接。`);
-        } catch (error) {
-          setError(`复制失败：${buildReadableError(error)}`);
-        }
-      });
+  list.forEach((item) => {
+    const url = String(item?.url || "").trim();
+    if (!url || state.resultUrlSet.has(url)) {
+      return;
     }
 
-    saveBtn.addEventListener("click", () => galleryController.saveImageToGallery(item, index));
-    fragment.appendChild(card);
+    const resultItem = {
+      url,
+      source: item?.source || "result",
+    };
+    state.resultItems.push(resultItem);
+    state.resultUrlSet.add(url);
+    const index = state.resultItems.length;
+    fragment.appendChild(createResultCard(resultItem, index));
+    appended += 1;
   });
 
-  els.results.appendChild(fragment);
+  if (appended) {
+    els.results.appendChild(fragment);
+  }
+  updateResultCount();
+  return appended;
+}
+
+function createResultCard(item, index) {
+  const card = els.imageCardTemplate.content.firstElementChild.cloneNode(true);
+  const imageWrap = card.querySelector(".image-wrap");
+  const img = card.querySelector("img");
+  const sourceTag = card.querySelector(".source-tag");
+  const imageIndex = card.querySelector(".image-index");
+  const downloadBtn = card.querySelector(".download-btn");
+  const copyBtn = card.querySelector(".copy-btn");
+  const saveBtn = card.querySelector(".save-btn");
+
+  bindResultPreviewTarget(imageWrap, () => index - 1);
+  img.src = item.url;
+  sourceTag.textContent = item.source;
+  imageIndex.textContent = `#${index}`;
+
+  downloadBtn.addEventListener("click", async () => {
+    try {
+      await downloadImage(item.url, `result-${index}`);
+      setStatus(`已下载第 ${index} 张图。`);
+    } catch (error) {
+      setError(`下载失败：${buildReadableError(error)}`);
+    }
+  });
+
+  if (item.url.startsWith("data:image/")) {
+    copyBtn.disabled = true;
+    copyBtn.title = "data URL 不适合复制为外链。";
+  } else {
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await copyText(item.url);
+        setStatus(`已复制第 ${index} 张图链接。`);
+      } catch (error) {
+        setError(`复制失败：${buildReadableError(error)}`);
+      }
+    });
+  }
+
+  saveBtn.addEventListener("click", () => galleryController.saveImageToGallery(item, index - 1));
+  return card;
+}
+
+function bindResultPreviewTarget(target, getIndex) {
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  target.setAttribute("role", "button");
+  target.setAttribute("tabindex", "0");
+
+  const openPreview = () => {
+    const previewItems = state.resultItems.map((item, idx) => ({
+      url: item.url,
+      source: item.source || "result",
+      label: `结果 #${idx + 1}`,
+      origin: "results",
+    }));
+    if (!previewItems.length) {
+      return;
+    }
+    const index = Math.max(0, Math.min(getIndex(), previewItems.length - 1));
+    previewController.openPreview(previewItems, index, target);
+  };
+
+  target.addEventListener("click", openPreview);
+  target.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openPreview();
+    }
+  });
+}
+
+function updateResultCount() {
+  els.resultCount.textContent = `${state.resultItems.length} 张`;
 }
 
 function collectFormValues() {
@@ -379,6 +483,10 @@ function collectFormValues() {
     editImageUrl: els.editImageUrl.value.trim(),
     editImageDataUrl: state.editImageDataUrl,
     editImageSource,
+    waterfallType: els.waterfallType.value,
+    waterfallTransport: els.waterfallTransport.value,
+    waterfallConcurrency: Math.min(toInt(els.waterfallConcurrency.value, 1), 3),
+    waterfallAspectRatio: els.waterfallAspectRatio.value,
     prompt: els.prompt.value.trim(),
     size: els.size.value,
     n: Math.min(toInt(els.n.value, DEFAULTS.n), 8),
@@ -469,6 +577,511 @@ async function buildImageEditRequestOptions(form) {
   };
 }
 
+async function buildImageEditStreamRequestOptions(form) {
+  const requestOptions = await buildImageEditRequestOptions(form);
+  const streamCount = Math.min(Math.max(toInt(form.n, 1), 1), 2);
+  requestOptions.body.set("n", String(streamCount));
+  requestOptions.body.set("stream", "true");
+  return requestOptions;
+}
+
+async function startWaterfall(form) {
+  const startToken = createWaterfallStartToken();
+  state.waterfallStartToken = startToken;
+  state.waterfallBaseUrl = form.baseUrl;
+  clearResults();
+
+  if (form.waterfallType === "edit") {
+    await startWaterfallEditStream(form, startToken);
+    return;
+  }
+
+  await startWaterfallGeneration(form, startToken);
+}
+
+function createWaterfallStartToken() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isWaterfallTokenActive(startToken) {
+  return Boolean(startToken) && state.waterfallStartToken === startToken;
+}
+
+async function startWaterfallGeneration(form, startToken) {
+  const adminBaseUrl = resolveAdminBaseUrl(form.baseUrl);
+  const aspectRatio = normalizeAspectRatio(form.waterfallAspectRatio || form.size);
+  const taskIds = await createImagineTasks(
+    adminBaseUrl,
+    form.apiKey,
+    form.prompt,
+    aspectRatio,
+    form.waterfallConcurrency
+  );
+
+  if (!isWaterfallTokenActive(startToken)) {
+    await stopImagineTasks(adminBaseUrl, form.apiKey, taskIds);
+    return;
+  }
+
+  state.waterfallAdminBaseUrl = adminBaseUrl;
+  state.waterfallTaskIds = taskIds;
+  state.waterfallRunning = true;
+  state.waterfallStreamSource = "";
+  updateSubmitAvailability();
+  updateStopButtonVisibility();
+  setStatus(`瀑布流已启动：${taskIds.length} 个任务。`);
+
+  const transport = form.waterfallTransport || "auto";
+  if (transport === "sse") {
+    startWaterfallSseConnections(taskIds, startToken);
+    return;
+  }
+
+  startWaterfallWsConnections(taskIds, form.prompt, aspectRatio, transport, startToken);
+}
+
+async function createImagineTasks(adminBaseUrl, apiKey, prompt, aspectRatio, concurrency) {
+  const count = Math.min(Math.max(toInt(concurrency, 1), 1), 3);
+  const tasks = [];
+  for (let i = 0; i < count; i += 1) {
+    const taskId = await createImagineTask(adminBaseUrl, apiKey, prompt, aspectRatio);
+    if (!taskId) {
+      throw new Error("瀑布流任务创建失败：未返回 task_id。");
+    }
+    tasks.push(taskId);
+  }
+  return tasks;
+}
+
+async function createImagineTask(adminBaseUrl, apiKey, prompt, aspectRatio) {
+  const endpoint = joinApiPath(adminBaseUrl, "/api/v1/admin/imagine/start");
+  const data = await requestJson(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      prompt,
+      aspect_ratio: aspectRatio,
+    }),
+  });
+  return String(data?.task_id || "").trim();
+}
+
+function startWaterfallWsConnections(taskIds, prompt, aspectRatio, transport, startToken) {
+  clearWaterfallFallbackTimer();
+  closeWaterfallWsConnections();
+  closeWaterfallSseConnections();
+
+  let opened = 0;
+  let fallbackTriggered = false;
+  const allowFallback = transport === "auto";
+
+  if (allowFallback) {
+    state.waterfallFallbackTimer = window.setTimeout(() => {
+      if (!isWaterfallTokenActive(startToken) || opened > 0 || fallbackTriggered) {
+        return;
+      }
+      fallbackTriggered = true;
+      startWaterfallSseConnections(taskIds, startToken);
+    }, 1500);
+  }
+
+  state.waterfallWsConnections = taskIds.map((taskId) => {
+    const wsUrl = buildWaterfallWsUrl(state.waterfallAdminBaseUrl, taskId);
+    const ws = new WebSocket(wsUrl);
+
+    ws.addEventListener("open", () => {
+      if (!isWaterfallTokenActive(startToken)) {
+        ws.close(1000, "stale-session");
+        return;
+      }
+
+      opened += 1;
+      state.waterfallStreamSource = "WS";
+      updateStopButtonVisibility();
+      setStatus("瀑布流运行中（WS）。");
+      ws.send(
+        JSON.stringify({
+          type: "start",
+          prompt,
+          aspect_ratio: aspectRatio,
+        })
+      );
+    });
+
+    ws.addEventListener("message", (event) => {
+      if (!isWaterfallTokenActive(startToken)) {
+        return;
+      }
+      try {
+        const payload = JSON.parse(String(event.data || ""));
+        handleWaterfallPayload(payload);
+      } catch {
+        // ignore non-json payload
+      }
+    });
+
+    ws.addEventListener("error", () => {
+      if (
+        !allowFallback ||
+        opened > 0 ||
+        fallbackTriggered ||
+        !isWaterfallTokenActive(startToken)
+      ) {
+        return;
+      }
+      fallbackTriggered = true;
+      clearWaterfallFallbackTimer();
+      startWaterfallSseConnections(taskIds, startToken);
+    });
+
+    ws.addEventListener("close", () => {
+      if (!isWaterfallTokenActive(startToken)) {
+        return;
+      }
+      const hasOpen = state.waterfallWsConnections.some(
+        (item) => item.readyState === WebSocket.OPEN
+      );
+      if (!hasOpen && !allowFallback && state.waterfallStreamSource === "WS") {
+        void stopWaterfall({ reason: "connection-closed", silent: true });
+        setStatus("WS 连接已关闭。");
+      }
+    });
+
+    return ws;
+  });
+}
+
+function startWaterfallSseConnections(taskIds, startToken) {
+  clearWaterfallFallbackTimer();
+  closeWaterfallWsConnections();
+  closeWaterfallSseConnections();
+
+  state.waterfallStreamSource = "SSE";
+  updateStopButtonVisibility();
+  setStatus("瀑布流运行中（SSE）。");
+
+  state.waterfallSseConnections = taskIds.map((taskId) => {
+    const sseUrl = buildWaterfallSseUrl(state.waterfallAdminBaseUrl, taskId);
+    const source = new EventSource(sseUrl);
+
+    source.onmessage = (event) => {
+      if (!isWaterfallTokenActive(startToken)) {
+        source.close();
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(String(event.data || ""));
+        handleWaterfallPayload(payload);
+      } catch {
+        // ignore non-json payload
+      }
+    };
+
+    source.onerror = () => {
+      if (!isWaterfallTokenActive(startToken)) {
+        source.close();
+        return;
+      }
+      if (source.readyState === EventSource.CLOSED) {
+        const hasOpen = state.waterfallSseConnections.some(
+          (item) => item.readyState === EventSource.OPEN
+        );
+        if (!hasOpen) {
+          void stopWaterfall({ reason: "connection-closed", silent: true });
+          setStatus("SSE 连接已关闭。");
+        }
+      }
+    };
+
+    return source;
+  });
+}
+
+function handleWaterfallPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  if (payload.type === "error") {
+    const message = String(payload.message || "瀑布流返回错误。").trim();
+    if (message) {
+      setError(message);
+    }
+    return;
+  }
+
+  if (payload.type === "status") {
+    if (payload.status === "running") {
+      const source = state.waterfallStreamSource || "stream";
+      setStatus(`瀑布流运行中（${source}）。`);
+    }
+    if (payload.status === "stopped" && state.waterfallRunning) {
+      setStatus("瀑布流已停止。");
+    }
+    return;
+  }
+
+  const images = extractImagesFromStreamEvent({ data: payload }, state.waterfallBaseUrl);
+  if (!images.length) {
+    return;
+  }
+
+  appendResults(images);
+  const source = state.waterfallStreamSource || "stream";
+  setStatus(`瀑布流运行中（${source}），已接收 ${state.resultItems.length} 张。`);
+}
+
+async function startWaterfallEditStream(form, startToken) {
+  const endpoint = joinApiPath(form.baseUrl, "/images/edits");
+  const requestOptions = await buildImageEditStreamRequestOptions(form);
+  if (!isWaterfallTokenActive(startToken)) {
+    return;
+  }
+  const abortController = new AbortController();
+  requestOptions.signal = abortController.signal;
+
+  state.waterfallEditAbortController = abortController;
+  state.waterfallRunning = true;
+  state.waterfallStreamSource = "EDIT-SSE";
+  updateSubmitAvailability();
+  updateStopButtonVisibility();
+  setStatus("image-edit 瀑布流已启动。");
+
+  void runWaterfallEditStream(endpoint, requestOptions, startToken);
+}
+
+async function runWaterfallEditStream(endpoint, requestOptions, startToken) {
+  try {
+    const response = await fetch(endpoint, requestOptions);
+    if (!response.ok) {
+      throw await normalizeHttpError(response);
+    }
+    if (!response.body) {
+      throw new Error("当前环境不支持流式读取。");
+    }
+
+    await readSseStream(
+      response,
+      (event) => {
+        if (!isWaterfallTokenActive(startToken)) {
+          return;
+        }
+        const payload = event?.data;
+        if (payload?.error?.message) {
+          setError(String(payload.error.message));
+          return;
+        }
+        const images = extractImagesFromStreamEvent(event, state.waterfallBaseUrl);
+        if (!images.length) {
+          return;
+        }
+        appendResults(images);
+        setStatus(`image-edit 瀑布流运行中，已接收 ${state.resultItems.length} 张。`);
+      },
+      () => isWaterfallTokenActive(startToken)
+    );
+
+    if (isWaterfallTokenActive(startToken)) {
+      setStatus(`image-edit 瀑布流完成，共 ${state.resultItems.length} 张。`);
+    }
+  } catch (error) {
+    if (!isWaterfallTokenActive(startToken)) {
+      return;
+    }
+    if (requestOptions.signal?.aborted) {
+      return;
+    }
+    setError(buildReadableError(error));
+    setStatus("image-edit 瀑布流失败。");
+    console.error(error);
+  } finally {
+    if (state.waterfallEditAbortController?.signal === requestOptions.signal) {
+      state.waterfallEditAbortController = null;
+    }
+    if (isWaterfallTokenActive(startToken)) {
+      state.waterfallRunning = false;
+      state.waterfallStreamSource = "";
+      state.waterfallTaskIds = [];
+      updateSubmitAvailability();
+      updateStopButtonVisibility();
+    }
+  }
+}
+
+async function readSseStream(response, onEvent, isActive) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (isActive()) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    const chunk = decoder.decode(value, { stream: true });
+    const parsed = consumeSseTextBuffer(buffer, chunk);
+    buffer = parsed.buffer;
+    parsed.events.forEach((event) => onEvent(event));
+  }
+
+  const rest = consumeSseTextBuffer(buffer, decoder.decode());
+  rest.events.forEach((event) => onEvent(event));
+}
+
+async function stopWaterfall(options = {}) {
+  const { reason = "manual-stop", silent = false, skipRemoteStop = false } = options;
+
+  state.waterfallStartToken = "";
+  clearWaterfallFallbackTimer();
+
+  if (state.waterfallEditAbortController) {
+    state.waterfallEditAbortController.abort();
+    state.waterfallEditAbortController = null;
+  }
+
+  closeWaterfallWsConnections();
+  closeWaterfallSseConnections();
+
+  const taskIds = Array.from(state.waterfallTaskIds);
+  const adminBaseUrl = state.waterfallAdminBaseUrl;
+  state.waterfallTaskIds = [];
+  state.waterfallRunning = false;
+  state.waterfallPending = false;
+  state.waterfallStreamSource = "";
+  updateSubmitAvailability();
+  updateStopButtonVisibility();
+
+  if (!skipRemoteStop && taskIds.length && adminBaseUrl) {
+    try {
+      await stopImagineTasks(adminBaseUrl, els.apiKey.value.trim(), taskIds);
+    } catch (error) {
+      console.warn("Failed to stop waterfall tasks", error);
+    }
+  }
+
+  if (!silent) {
+    setStatus(reason === "manual-stop" ? "瀑布流已停止。" : "瀑布流已结束。");
+  }
+}
+
+async function stopImagineTasks(adminBaseUrl, apiKey, taskIds) {
+  if (!taskIds.length) {
+    return;
+  }
+
+  await fetch(joinApiPath(adminBaseUrl, "/api/v1/admin/imagine/stop"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ task_ids: taskIds }),
+  });
+}
+
+function clearWaterfallFallbackTimer() {
+  if (state.waterfallFallbackTimer) {
+    clearTimeout(state.waterfallFallbackTimer);
+    state.waterfallFallbackTimer = null;
+  }
+}
+
+function closeWaterfallWsConnections() {
+  state.waterfallWsConnections.forEach((ws) => {
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "stop" }));
+      }
+    } catch {
+      // ignore send error
+    }
+    try {
+      ws.close(1000, "client-stop");
+    } catch {
+      // ignore close error
+    }
+  });
+  state.waterfallWsConnections = [];
+}
+
+function closeWaterfallSseConnections() {
+  state.waterfallSseConnections.forEach((source) => {
+    try {
+      source.close();
+    } catch {
+      // ignore close error
+    }
+  });
+  state.waterfallSseConnections = [];
+}
+
+function normalizeAspectRatio(value) {
+  const input = String(value || "").trim();
+  if (["2:3", "1:1", "3:2", "16:9", "9:16"].includes(input)) {
+    return input;
+  }
+
+  const mapping = {
+    "1024x1024": "1:1",
+    "512x512": "1:1",
+    "1024x576": "16:9",
+    "1280x720": "16:9",
+    "1536x864": "16:9",
+    "576x1024": "9:16",
+    "720x1280": "9:16",
+    "864x1536": "9:16",
+    "1024x1536": "2:3",
+    "512x768": "2:3",
+    "768x1024": "2:3",
+    "1536x1024": "3:2",
+    "768x512": "3:2",
+    "1024x768": "3:2",
+  };
+  return mapping[input] || "2:3";
+}
+
+function resolveAdminBaseUrl(baseUrl) {
+  const sanitized = sanitizeBaseUrl(baseUrl);
+  let parsed;
+  try {
+    parsed = new URL(sanitized);
+  } catch {
+    throw new Error("Base URL 无效，无法构建 waterfall 管理端点。");
+  }
+
+  let pathname = parsed.pathname.replace(/\/+$/, "");
+  pathname = pathname.replace(/\/v\d+$/i, "");
+  parsed.pathname = pathname || "/";
+  parsed.search = "";
+  parsed.hash = "";
+  return sanitizeBaseUrl(parsed.toString());
+}
+
+function joinApiPath(baseUrl, path) {
+  const cleanBase = sanitizeBaseUrl(baseUrl);
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  return `${cleanBase}${cleanPath}`;
+}
+
+function buildWaterfallWsUrl(adminBaseUrl, taskId) {
+  const url = new URL(joinApiPath(adminBaseUrl, "/api/v1/admin/imagine/ws"));
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("task_id", taskId);
+  return url.toString();
+}
+
+function buildWaterfallSseUrl(adminBaseUrl, taskId) {
+  const url = new URL(joinApiPath(adminBaseUrl, "/api/v1/admin/imagine/sse"));
+  url.searchParams.set("task_id", taskId);
+  url.searchParams.set("t", String(Date.now()));
+  return url.toString();
+}
+
 function appendOptionalNumber(target, key, value) {
   if (value !== null && Number.isFinite(value)) {
     target[key] = value;
@@ -554,12 +1167,21 @@ function clearResults() {
     previewController.closePreview();
   }
   els.results.innerHTML = "";
-  els.resultCount.textContent = "0 张";
+  state.resultItems = [];
+  state.resultUrlSet.clear();
+  updateResultCount();
   clearError();
-  setStatus("结果已清空。");
+  if (state.waterfallRunning) {
+    setStatus("瀑布流运行中，结果已清空。");
+  } else {
+    setStatus("结果已清空。");
+  }
 }
 
 function resetDefaults() {
+  if (state.waterfallRunning || state.waterfallPending) {
+    void stopWaterfall({ reason: "reset-defaults", silent: true });
+  }
   applyForm(DEFAULTS);
   state.preferredModel = "";
   state.editImageDataUrl = "";
@@ -583,6 +1205,11 @@ function applyForm(values) {
   els.editInputType.value = values.editInputType || DEFAULTS.editInputType;
   els.editImageUrl.value = values.editImageUrl || DEFAULTS.editImageUrl;
   els.editImageFile.value = "";
+  els.waterfallType.value = values.waterfallType || DEFAULTS.waterfallType;
+  els.waterfallTransport.value = values.waterfallTransport || DEFAULTS.waterfallTransport;
+  els.waterfallConcurrency.value =
+    String(values.waterfallConcurrency ?? DEFAULTS.waterfallConcurrency) || "1";
+  els.waterfallAspectRatio.value = values.waterfallAspectRatio || DEFAULTS.waterfallAspectRatio;
   els.editFileHint.textContent = "未选择文件";
   els.prompt.value = values.prompt || DEFAULTS.prompt;
   els.size.value = values.size || DEFAULTS.size;
@@ -608,6 +1235,10 @@ function persistCurrentFormState() {
     editInputType: els.editInputType.value,
     editImageUrl: els.editImageUrl.value.trim(),
     editImageDataUrl: state.editImageDataUrl,
+    waterfallType: els.waterfallType.value,
+    waterfallTransport: els.waterfallTransport.value,
+    waterfallConcurrency: els.waterfallConcurrency.value,
+    waterfallAspectRatio: els.waterfallAspectRatio.value,
     prompt: els.prompt.value,
     size: els.size.value,
     n: els.n.value,
@@ -621,13 +1252,29 @@ function persistCurrentFormState() {
 
 function updateModeUI() {
   const showTemperature = els.mode.value === "chat";
-  const showImageEdit = isImageEditMode();
+  const showImageEdit = shouldShowImageEditControls();
+  const showWaterfall = isWaterfallMode();
+  const showWaterfallGeneration = showWaterfall && !isWaterfallEditType();
+  const showWaterfallEdit = showWaterfall && isWaterfallEditType();
   document.querySelectorAll(".mode-chat-only").forEach((el) => {
     el.hidden = !showTemperature;
   });
   document.querySelectorAll(".mode-edit-only").forEach((el) => {
     el.hidden = !showImageEdit;
   });
+  document.querySelectorAll(".mode-waterfall-only").forEach((el) => {
+    el.hidden = !showWaterfall;
+  });
+  document.querySelectorAll(".mode-waterfall-generate-only").forEach((el) => {
+    el.hidden = !showWaterfallGeneration;
+  });
+  document.querySelectorAll(".mode-waterfall-edit-only").forEach((el) => {
+    el.hidden = !showWaterfallEdit;
+  });
+
+  if (!showWaterfall && (state.waterfallRunning || state.waterfallPending)) {
+    void stopWaterfall({ reason: "mode-change" });
+  }
 
   if (
     showImageEdit &&
@@ -642,10 +1289,27 @@ function updateModeUI() {
   updateEditInputUI();
   updateEditModelHint();
   updateSubmitAvailability();
+  updateStopButtonVisibility();
 }
 
 function isImageEditMode() {
   return els.mode.value === "image-edit";
+}
+
+function isWaterfallMode() {
+  return els.mode.value === "waterfall";
+}
+
+function isWaterfallEditType() {
+  return els.waterfallType.value === "edit";
+}
+
+function isWaterfallEditMode() {
+  return isWaterfallMode() && isWaterfallEditType();
+}
+
+function shouldShowImageEditControls() {
+  return isImageEditMode() || isWaterfallEditMode();
 }
 
 function isEditModelName(modelName) {
@@ -746,11 +1410,17 @@ function updateEditModelHint() {
 }
 
 function updateSubmitAvailability() {
-  if (state.isSubmitting) {
+  if (state.isSubmitting || state.waterfallPending || state.waterfallRunning) {
+    els.submitBtn.disabled = true;
+    els.submitBtn.title = state.waterfallRunning
+      ? "瀑布流运行中，请先停止"
+      : state.waterfallPending
+        ? "瀑布流正在启动"
+        : "";
     return;
   }
 
-  if (!isImageEditMode()) {
+  if (!shouldShowImageEditControls()) {
     els.submitBtn.disabled = false;
     els.submitBtn.title = "";
     return;
@@ -777,6 +1447,24 @@ function updateSubmitAvailability() {
     return;
   }
   els.submitBtn.title = "";
+}
+
+function updateStopButtonVisibility() {
+  const showStop = isWaterfallMode();
+  els.stopBtn.hidden = !showStop;
+  els.stopBtn.disabled = !(state.waterfallRunning || state.waterfallPending);
+  if (state.waterfallPending) {
+    els.stopBtn.textContent = "启动中...";
+    return;
+  }
+  if (state.waterfallRunning) {
+    const label = state.waterfallStreamSource
+      ? `停止瀑布流（${state.waterfallStreamSource}）`
+      : "停止瀑布流";
+    els.stopBtn.textContent = label;
+    return;
+  }
+  els.stopBtn.textContent = "停止瀑布流";
 }
 
 function updateEditInputUI() {
