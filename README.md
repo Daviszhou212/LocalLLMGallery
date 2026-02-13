@@ -36,6 +36,7 @@ This project is a local image-generation console for OpenAI-compatible APIs, wit
 
 - `POST /v1/chat/completions`
 - `POST /v1/images/generations`
+- `POST /v1/images/edits` (for `image-edit` mode)
 - `GET /v1/models`
 
 ## 核心特性 / Features
@@ -104,6 +105,9 @@ Windows 推荐：
 start.bat
 ```
 
+`start.bat` will automatically open the local page in your default browser after startup.
+运行 `start.bat` 后，会自动在默认浏览器打开本地页面。
+
 通用方式：
 
 ```bash
@@ -116,26 +120,30 @@ npm run start
 
 ## 环境变量 / Environment Variables
 
-| 变量 / Variable | 默认值 / Default | 说明 / Description |
-| --- | --- | --- |
-| `HOST` | `127.0.0.1` | 本地服务监听地址 / Bind host |
-| `PORT` | `8086` | 本地服务端口 / Bind port |
-| `LOCAL_API_TOKEN` | `""` | 写接口 token / Write-auth token |
-| `ALLOW_INSECURE_LOCAL` | `false` | 本地调试时允许放宽鉴权 / Dev-only insecure override |
-| `REQUEST_TIMEOUT_MS` | `15000` | 上游请求超时 / Upstream timeout |
-| `IMAGE_FETCH_TIMEOUT_MS` | `15000` | 图片抓取超时 / Image fetch timeout |
-| `IMAGE_FETCH_MAX_BYTES` | `15728640` | 最大图片体积 / Max image size |
-| `JSON_BODY_LIMIT` | `20mb` | JSON 请求体限制 / JSON body limit |
-| `WRITE_RATE_LIMIT_WINDOW_MS` | `60000` | 写接口限流窗口 / Rate-limit window |
-| `WRITE_RATE_LIMIT_MAX` | `60` | 窗口内写请求上限 / Max writes in window |
+| 变量 / Variable              | 默认值 / Default | 说明 / Description                                  |
+| ---------------------------- | ---------------- | --------------------------------------------------- |
+| `HOST`                       | `127.0.0.1`      | 本地服务监听地址 / Bind host                        |
+| `PORT`                       | `8086`           | 本地服务端口 / Bind port                            |
+| `LOCAL_API_TOKEN`            | `""`             | 写接口 token / Write-auth token                     |
+| `ALLOW_INSECURE_LOCAL`       | `false`          | 本地调试时允许放宽鉴权 / Dev-only insecure override |
+| `REQUEST_TIMEOUT_MS`         | `15000`          | 上游请求超时 / Upstream timeout                     |
+| `IMAGE_FETCH_TIMEOUT_MS`     | `15000`          | 图片抓取超时 / Image fetch timeout                  |
+| `IMAGE_FETCH_MAX_BYTES`      | `15728640`       | 最大图片体积 / Max image size                       |
+| `JSON_BODY_LIMIT`            | `20mb`           | JSON 请求体限制 / JSON body limit                   |
+| `WRITE_RATE_LIMIT_WINDOW_MS` | `60000`          | 写接口限流窗口 / Rate-limit window                  |
+| `WRITE_RATE_LIMIT_MAX`       | `60`             | 窗口内写请求上限 / Max writes in window             |
 
 ## 使用说明 / Usage
 
 1. 填写 `Base URL`、`API Key`、`画廊服务 URL`、`Local Token`。
 2. 点击“连接 URL”拉取模型列表。
 3. 选择模型并填写 `Prompt`，点击生成。
-4. 在结果区可下载、复制链接、保存到画廊。
-5. 在画廊页可浏览、预览、删除图片。
+4. 若使用 `image-edit` 模式：
+   - 需要连接后检测到名称包含 `edit` 的模型；
+   - 提供原图（URL / data URL / 本地上传）后才可提交；
+   - 会以 `multipart/form-data` 调用 `/v1/images/edits`，图片字段为 `image`。
+5. 在结果区可下载、复制链接、保存到画廊。
+6. 在画廊页可浏览、预览、删除图片。
 
 ## 本地 API / Local API
 

@@ -179,6 +179,32 @@ label {
   font-size: 0.8rem;
 }
 
+.mode-edit-only {
+  border-style: dashed;
+}
+
+.edit-image-preview {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  min-height: 180px;
+  max-height: 280px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.edit-image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: none;
+}
+
+.edit-image-preview.has-image img {
+  display: block;
+}
+
 .inline-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

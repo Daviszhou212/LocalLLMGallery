@@ -31,7 +31,14 @@ const els = {
   modelSelect: document.getElementById("modelSelect"),
   modelManual: document.getElementById("modelManual"),
   modelHint: document.getElementById("model-hint"),
+  editModelHint: document.getElementById("edit-model-hint"),
   prompt: document.getElementById("prompt"),
+  editInputType: document.getElementById("editInputType"),
+  editImageUrl: document.getElementById("editImageUrl"),
+  editImageFile: document.getElementById("editImageFile"),
+  editFileHint: document.getElementById("edit-file-hint"),
+  editImagePreviewWrap: document.getElementById("edit-image-preview-wrap"),
+  editImagePreview: document.getElementById("edit-image-preview"),
   size: document.getElementById("size"),
   n: document.getElementById("n"),
   seed: document.getElementById("seed"),
@@ -68,7 +75,9 @@ const state = {
   isConnecting: false,
   activeTab: "results",
   models: [],
+  editModels: [],
   preferredModel: "",
+  editImageDataUrl: "",
 };
 
 const previewController = createPreviewController(els, {
@@ -107,6 +116,8 @@ function init() {
   updateModeUI();
   updateProtocolTip();
   updateModelHint();
+  syncEditImagePreview(resolveEditImageSource());
+  updateSubmitAvailability();
   switchTab("results");
   setStatus("就绪：先连接模型，然后生成图像。");
 }
@@ -131,6 +142,8 @@ function bindEvents() {
     els.proxyBaseUrl,
     els.modelSelect,
     els.modelManual,
+    els.editInputType,
+    els.editImageUrl,
     els.prompt,
     els.size,
     els.n,
@@ -153,6 +166,18 @@ function bindEvents() {
     persistCurrentFormState();
   });
   els.modelManual.addEventListener("input", updateModelHint);
+  els.editInputType.addEventListener("change", () => {
+    updateEditInputUI();
+    syncEditImagePreview(resolveEditImageSource());
+    updateSubmitAvailability();
+  });
+  els.editImageUrl.addEventListener("input", () => {
+    if (els.editInputType.value === "url") {
+      syncEditImagePreview(els.editImageUrl.value.trim());
+      updateSubmitAvailability();
+    }
+  });
+  els.editImageFile.addEventListener("change", onEditImageFileChange);
 }
 
 async function onConnectModels() {
@@ -193,15 +218,20 @@ async function onConnectModels() {
 
     if (!models.length) {
       els.modelHint.textContent = "未获取到模型列表，请手动填写模型名。";
+      updateEditModelHint();
+      updateSubmitAvailability();
       setStatus("连接成功，但未返回可用模型。");
       return;
     }
 
     if (!resolveModelValue()) {
-      els.modelSelect.value = models[0];
+      const firstEditModel = state.editModels[0] || "";
+      els.modelSelect.value =
+        els.mode.value === "image-edit" && firstEditModel ? firstEditModel : models[0];
     }
     state.preferredModel = resolveModelValue();
     updateModelHint();
+    updateSubmitAvailability();
     setStatus(`连接成功：已加载 ${models.length} 个模型。`);
   } catch (error) {
     setError(`连接失败：${buildReadableError(error)}`);
@@ -233,20 +263,33 @@ async function onSubmit(event) {
     setSubmitting(false);
     return;
   }
+  if (form.mode === "image-edit") {
+    if (!hasAvailableEditModels()) {
+      setError("当前模型列表中没有可用的 image-edit 模型（名称需包含 edit）。");
+      setStatus("image-edit 不可用：请连接包含 edit 模型的服务。");
+      setSubmitting(false);
+      return;
+    }
+    if (!modelSupportsImageEdit(form.model)) {
+      setError("当前模型不支持 image-edit，请选择名称包含 edit 的模型。");
+      setStatus("image-edit 校验失败：模型不匹配。");
+      setSubmitting(false);
+      return;
+    }
+    if (!form.editImageSource) {
+      setError("image-edit 需要提供原图 URL 或上传文件。");
+      setStatus("缺少 image-edit 原图参数。");
+      setSubmitting(false);
+      return;
+    }
+  }
 
   const endpoint = buildEndpoint(form.baseUrl, form.mode);
-  const body = form.mode === "chat" ? buildChatPayload(form) : buildImagesPayload(form);
 
   try {
+    const requestOptions = await buildRequestOptions(form);
     setStatus(`请求发送中：${endpoint}`);
-    const data = await requestJson(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${form.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const data = await requestJson(endpoint, requestOptions);
 
     const parsed =
       form.mode === "chat"
@@ -325,12 +368,17 @@ function renderResults(images) {
 }
 
 function collectFormValues() {
+  const editImageSource = resolveEditImageSource();
   return {
     mode: els.mode.value,
     baseUrl: sanitizeBaseUrl(els.baseUrl.value),
     apiKey: els.apiKey.value.trim(),
     proxyBaseUrl: sanitizeBaseUrl(els.proxyBaseUrl.value),
     model: resolveModelValue(),
+    editInputType: els.editInputType.value,
+    editImageUrl: els.editImageUrl.value.trim(),
+    editImageDataUrl: state.editImageDataUrl,
+    editImageSource,
     prompt: els.prompt.value.trim(),
     size: els.size.value,
     n: Math.min(toInt(els.n.value, DEFAULTS.n), 8),
@@ -341,7 +389,36 @@ function collectFormValues() {
 }
 
 function buildEndpoint(baseUrl, mode) {
-  return mode === "chat" ? `${baseUrl}/chat/completions` : `${baseUrl}/images/generations`;
+  if (mode === "chat") {
+    return `${baseUrl}/chat/completions`;
+  }
+  if (mode === "image-edit") {
+    return `${baseUrl}/images/edits`;
+  }
+  return `${baseUrl}/images/generations`;
+}
+
+function buildPayload(form) {
+  if (form.mode === "chat") {
+    return buildChatPayload(form);
+  }
+  return buildImagesPayload(form);
+}
+
+async function buildRequestOptions(form) {
+  if (form.mode === "image-edit") {
+    return buildImageEditRequestOptions(form);
+  }
+
+  const body = buildPayload(form);
+  return {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${form.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  };
 }
 
 function buildChatPayload(form) {
@@ -374,6 +451,24 @@ function buildImagesPayload(form) {
   return payload;
 }
 
+async function buildImageEditRequestOptions(form) {
+  const imageFile = await resolveEditImageFile(form.editImageSource);
+  const body = new FormData();
+  body.set("model", form.model);
+  body.set("prompt", form.prompt);
+  body.set("n", String(form.n));
+  body.set("size", form.size);
+  body.append("image", imageFile.blob, imageFile.filename);
+
+  return {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${form.apiKey}`,
+    },
+    body,
+  };
+}
+
 function appendOptionalNumber(target, key, value) {
   if (value !== null && Number.isFinite(value)) {
     target[key] = value;
@@ -401,6 +496,7 @@ function switchTab(tab) {
 
 function renderModelOptions(models, preferred = "") {
   state.models = models;
+  state.editModels = getEditModels(models);
   els.modelSelect.innerHTML = "";
 
   const placeholder = document.createElement("option");
@@ -423,6 +519,8 @@ function renderModelOptions(models, preferred = "") {
   } else if (!els.modelManual.value.trim()) {
     els.modelSelect.value = "";
   }
+
+  updateEditModelHint();
 }
 
 function resolveModelValue() {
@@ -439,17 +537,16 @@ function updateModelHint() {
 
   if (manual) {
     els.modelHint.textContent = `当前使用手动模型：${manual}`;
-    return;
-  }
-  if (selected) {
+  } else if (selected) {
     els.modelHint.textContent = `当前使用下拉模型：${selected}`;
-    return;
-  }
-  if (state.models.length) {
+  } else if (state.models.length) {
     els.modelHint.textContent = `已加载 ${state.models.length} 个模型，请从下拉选择或手动输入。`;
-    return;
+  } else {
+    els.modelHint.textContent = "点击“连接 URL”可获取模型列表";
   }
-  els.modelHint.textContent = "点击“连接 URL”可获取模型列表";
+
+  updateEditModelHint();
+  updateSubmitAvailability();
 }
 
 function clearResults() {
@@ -465,9 +562,12 @@ function clearResults() {
 function resetDefaults() {
   applyForm(DEFAULTS);
   state.preferredModel = "";
+  state.editImageDataUrl = "";
   clearPersistedState();
   renderModelOptions([]);
   updateModelHint();
+  updateEditInputUI();
+  syncEditImagePreview("");
   clearResults();
   setStatus("已恢复默认配置。");
 }
@@ -480,12 +580,17 @@ function applyForm(values) {
   els.localToken.value = values.localToken || DEFAULTS.localToken;
   els.proxyBaseUrl.value = migrateProxyBaseUrl(values.proxyBaseUrl || DEFAULTS.proxyBaseUrl);
   els.modelManual.value = values.modelManual || values.model || "";
+  els.editInputType.value = values.editInputType || DEFAULTS.editInputType;
+  els.editImageUrl.value = values.editImageUrl || DEFAULTS.editImageUrl;
+  els.editImageFile.value = "";
+  els.editFileHint.textContent = "未选择文件";
   els.prompt.value = values.prompt || DEFAULTS.prompt;
   els.size.value = values.size || DEFAULTS.size;
   els.n.value = values.n ?? DEFAULTS.n;
   els.seed.value = values.seed ?? DEFAULTS.seed;
   els.temperature.value = values.temperature ?? DEFAULTS.temperature;
   els.guidance.value = values.guidance ?? DEFAULTS.guidance;
+  state.editImageDataUrl = "";
   state.preferredModel = values.modelSelected || values.model || "";
 }
 
@@ -500,6 +605,9 @@ function persistCurrentFormState() {
     modelManual: els.modelManual.value.trim(),
     modelSelected: els.modelSelect.value.trim(),
     model: resolveModelValue(),
+    editInputType: els.editInputType.value,
+    editImageUrl: els.editImageUrl.value.trim(),
+    editImageDataUrl: state.editImageDataUrl,
     prompt: els.prompt.value,
     size: els.size.value,
     n: els.n.value,
@@ -513,9 +621,230 @@ function persistCurrentFormState() {
 
 function updateModeUI() {
   const showTemperature = els.mode.value === "chat";
+  const showImageEdit = isImageEditMode();
   document.querySelectorAll(".mode-chat-only").forEach((el) => {
     el.hidden = !showTemperature;
   });
+  document.querySelectorAll(".mode-edit-only").forEach((el) => {
+    el.hidden = !showImageEdit;
+  });
+
+  if (
+    showImageEdit &&
+    state.editModels.length &&
+    !modelSupportsImageEdit(resolveModelValue()) &&
+    !els.modelManual.value.trim()
+  ) {
+    els.modelSelect.value = state.editModels[0];
+    state.preferredModel = resolveModelValue();
+  }
+
+  updateEditInputUI();
+  updateEditModelHint();
+  updateSubmitAvailability();
+}
+
+function isImageEditMode() {
+  return els.mode.value === "image-edit";
+}
+
+function isEditModelName(modelName) {
+  return /edit/i.test(String(modelName || "").trim());
+}
+
+function getEditModels(models) {
+  if (!Array.isArray(models)) {
+    return [];
+  }
+  return models.filter((name) => isEditModelName(name));
+}
+
+function hasAvailableEditModels() {
+  return state.editModels.length > 0;
+}
+
+function modelSupportsImageEdit(modelName) {
+  return isEditModelName(modelName);
+}
+
+function resolveEditImageSource() {
+  if (els.editInputType.value === "upload") {
+    return String(state.editImageDataUrl || "").trim();
+  }
+  return els.editImageUrl.value.trim();
+}
+
+async function resolveEditImageFile(sourceUrl) {
+  const source = String(sourceUrl || "").trim();
+  if (!source) {
+    throw new Error("缺少 image-edit 原图。");
+  }
+
+  let response;
+  try {
+    response = await fetch(source);
+  } catch (error) {
+    throw new Error(`无法读取原图，请检查 URL 或 CORS：${buildReadableError(error)}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`原图下载失败：HTTP ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const mime = String(blob.type || "").toLowerCase();
+  if (!mime.startsWith("image/")) {
+    throw new Error(`原图内容不是图片：${mime || "unknown"}`);
+  }
+
+  const ext = extensionFromMime(mime) || guessExtension(source) || "png";
+  return {
+    blob,
+    filename: `image-edit-source.${ext}`,
+  };
+}
+
+function extensionFromMime(mime) {
+  const normalized = String(mime || "").toLowerCase();
+  if (normalized === "image/jpeg" || normalized === "image/jpg") {
+    return "jpg";
+  }
+  if (normalized === "image/png") {
+    return "png";
+  }
+  if (normalized === "image/webp") {
+    return "webp";
+  }
+  if (normalized === "image/gif") {
+    return "gif";
+  }
+  if (normalized === "image/bmp") {
+    return "bmp";
+  }
+  if (normalized === "image/tiff") {
+    return "tiff";
+  }
+  return "";
+}
+
+function updateEditModelHint() {
+  if (!els.editModelHint) {
+    return;
+  }
+
+  if (!state.models.length) {
+    els.editModelHint.textContent = "image-edit 将在连接后自动检测可用模型";
+    return;
+  }
+
+  if (!state.editModels.length) {
+    els.editModelHint.textContent = "未检测到含 edit 的模型，image-edit 已禁用";
+    return;
+  }
+
+  els.editModelHint.textContent = `已检测到 ${state.editModels.length} 个 edit 模型，可用于 image-edit`;
+}
+
+function updateSubmitAvailability() {
+  if (state.isSubmitting) {
+    return;
+  }
+
+  if (!isImageEditMode()) {
+    els.submitBtn.disabled = false;
+    els.submitBtn.title = "";
+    return;
+  }
+
+  const modelName = resolveModelValue();
+  const imageSource = resolveEditImageSource();
+  const hasEditModel = hasAvailableEditModels();
+  const modelMatched = modelSupportsImageEdit(modelName);
+  const hasSourceImage = Boolean(imageSource);
+  const canSubmit = hasEditModel && modelMatched && hasSourceImage;
+
+  els.submitBtn.disabled = !canSubmit;
+  if (!hasEditModel) {
+    els.submitBtn.title = "当前没有可用的 edit 模型";
+    return;
+  }
+  if (!modelMatched) {
+    els.submitBtn.title = "请选择名称包含 edit 的模型";
+    return;
+  }
+  if (!hasSourceImage) {
+    els.submitBtn.title = "请提供 image-edit 原图";
+    return;
+  }
+  els.submitBtn.title = "";
+}
+
+function updateEditInputUI() {
+  const useUpload = els.editInputType.value === "upload";
+  document.querySelectorAll(".mode-edit-url-only").forEach((el) => {
+    el.hidden = useUpload;
+  });
+  document.querySelectorAll(".mode-edit-upload-only").forEach((el) => {
+    el.hidden = !useUpload;
+  });
+}
+
+async function onEditImageFileChange() {
+  const file = els.editImageFile.files && els.editImageFile.files[0];
+  if (!file) {
+    state.editImageDataUrl = "";
+    els.editFileHint.textContent = "未选择文件";
+    syncEditImagePreview("");
+    updateSubmitAvailability();
+    persistCurrentFormState();
+    return;
+  }
+
+  if (!String(file.type || "").startsWith("image/")) {
+    state.editImageDataUrl = "";
+    els.editFileHint.textContent = `文件类型不支持：${file.type || "unknown"}`;
+    syncEditImagePreview("");
+    updateSubmitAvailability();
+    persistCurrentFormState();
+    return;
+  }
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    state.editImageDataUrl = dataUrl;
+    els.editFileHint.textContent = `已选择：${file.name}`;
+    syncEditImagePreview(dataUrl);
+    clearError();
+    updateSubmitAvailability();
+    persistCurrentFormState();
+  } catch (error) {
+    state.editImageDataUrl = "";
+    els.editFileHint.textContent = "读取文件失败";
+    syncEditImagePreview("");
+    setError(`读取上传图片失败：${buildReadableError(error)}`);
+    updateSubmitAvailability();
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+function syncEditImagePreview(sourceUrl) {
+  const imageUrl = String(sourceUrl || "").trim();
+  if (!imageUrl) {
+    els.editImagePreview.removeAttribute("src");
+    els.editImagePreviewWrap.classList.remove("has-image");
+    return;
+  }
+
+  els.editImagePreview.src = imageUrl;
+  els.editImagePreviewWrap.classList.add("has-image");
 }
 
 function updateProtocolTip() {
@@ -526,8 +855,12 @@ function updateProtocolTip() {
 
 function setSubmitting(flag) {
   state.isSubmitting = flag;
-  els.submitBtn.disabled = flag;
   els.submitBtn.textContent = flag ? "生成中..." : "生成图像";
+  if (flag) {
+    els.submitBtn.disabled = true;
+    return;
+  }
+  updateSubmitAvailability();
 }
 
 function setConnecting(flag) {

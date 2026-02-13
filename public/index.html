@@ -27,6 +27,7 @@
             <select id="mode" name="mode">
               <option value="chat">chat/completions</option>
               <option value="images">images/generations</option>
+              <option value="image-edit">images/edits</option>
             </select>
           </div>
 
@@ -75,6 +76,9 @@
               placeholder="可手动输入模型名，优先级高于下拉选择"
             />
             <small id="model-hint" class="field-hint">点击“连接 URL”可获取模型列表</small>
+            <small id="edit-model-hint" class="field-hint">
+              image-edit 将在连接后自动检测可用模型
+            </small>
           </div>
 
           <div class="row">
@@ -87,6 +91,42 @@
               required
             ></textarea>
           </div>
+
+          <fieldset class="group mode-edit-only" hidden>
+            <legend>image-edit 输入</legend>
+
+            <div class="row">
+              <label for="editInputType">原图来源</label>
+              <select id="editInputType" name="editInputType">
+                <option value="url">URL / data URL</option>
+                <option value="upload">本地上传</option>
+              </select>
+            </div>
+
+            <div class="row mode-edit-url-only">
+              <label for="editImageUrl">原图 URL</label>
+              <input
+                id="editImageUrl"
+                name="editImageUrl"
+                type="url"
+                placeholder="https://example.com/source.png"
+              />
+              <small class="field-hint">支持 http(s) URL，或直接粘贴 data:image/...</small>
+            </div>
+
+            <div class="row mode-edit-upload-only" hidden>
+              <label for="editImageFile">上传原图</label>
+              <input id="editImageFile" name="editImageFile" type="file" accept="image/*" />
+              <small id="edit-file-hint" class="field-hint">未选择文件</small>
+            </div>
+
+            <div class="row">
+              <label>原图预览</label>
+              <div id="edit-image-preview-wrap" class="edit-image-preview">
+                <img id="edit-image-preview" alt="image-edit 原图预览" />
+              </div>
+            </div>
+          </fieldset>
 
           <fieldset class="group">
             <legend>基础参数</legend>

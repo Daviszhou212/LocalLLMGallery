@@ -11,6 +11,8 @@ export const DEFAULTS = {
   proxyBaseUrl: "http://127.0.0.1:8086",
   modelManual: "",
   modelSelected: "",
+  editInputType: "url",
+  editImageUrl: "",
   prompt: "",
   size: "1024x1024",
   n: 1,
@@ -31,6 +33,10 @@ export function hydrateFromStorage() {
   if (!merged.rememberApiKey) {
     merged.apiKey = DEFAULTS.apiKey;
   }
+  if (merged.editInputType !== "upload") {
+    merged.editInputType = "url";
+  }
+  merged.editImageUrl = typeof merged.editImageUrl === "string" ? merged.editImageUrl : "";
   merged.proxyBaseUrl = migrateProxyBaseUrl(merged.proxyBaseUrl);
   return merged;
 }
@@ -40,6 +46,9 @@ export function persistFormState(formState) {
     ...formState,
     proxyBaseUrl: migrateProxyBaseUrl(formState.proxyBaseUrl),
   };
+
+  // data URL may be large; keep it runtime-only instead of writing to localStorage.
+  delete payload.editImageDataUrl;
 
   if (!payload.rememberApiKey) {
     payload.apiKey = "";

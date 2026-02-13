@@ -9,6 +9,7 @@
 - 上游接口（README 已声明）：
   - `POST /v1/chat/completions`
   - `POST /v1/images/generations`
+  - `POST /v1/images/edits`（image-edit）
   - `GET /v1/models`
 - 默认访问地址：
   - 前端/服务：`http://127.0.0.1:8086`
@@ -124,9 +125,10 @@ npm run start
 
 1. 打开 `http://127.0.0.1:8086`。
 2. 点击“连接 URL”（触发 `POST /api/models/fetch`）。
-3. 发起一次生成（上游 `chat/completions` 或 `images/generations`）。
-4. 在结果区执行“保存到画廊”（触发 `POST /api/gallery/save`）。
-5. 在画廊页验证列表加载与删除（`GET /api/gallery/list`、`DELETE /api/gallery/:id`）。
+3. 发起一次生成（上游 `chat/completions` / `images/generations` / `images/edits`）。
+4. `image-edit` 模式下，确认模型名包含 `edit` 且已提供原图（URL 或上传）。
+5. 在结果区执行“保存到画廊”（触发 `POST /api/gallery/save`）。
+6. 在画廊页验证列表加载与删除（`GET /api/gallery/list`、`DELETE /api/gallery/:id`）。
 
 ### 6.3 存储与索引维护
 
@@ -198,6 +200,28 @@ npm run format:check
   - 修正 URL/Key；
   - 恢复上游服务；
   - 按需增大超时后重试。
+
+### 条目 6：`image-edit` 按钮不可点击
+
+- 症状：切到 `image-edit` 后提交按钮置灰。
+- 定位：
+  - 检查模型列表中是否存在名称包含 `edit` 的模型；
+  - 检查是否已填写原图 URL，或已上传本地图片；
+  - 检查当前选中的模型名是否包含 `edit`。
+- 处理：
+  - 重新连接支持 edit 的上游；
+  - 切换到可用的 edit 模型；
+  - 补充原图后重试。
+
+### 条目 7：`image-edit` 返回 `HTTP 400 - Field required`
+
+- 症状：调用 `/v1/images/edits` 时报缺少字段。
+- 定位：
+  - 若上游是 `grok2api`，其 `images/edits` 需要 `multipart/form-data`；
+  - 必须传 `image` 文件字段，而不是 JSON 的 `image_url`。
+- 处理：
+  - 确认前端请求为 `multipart/form-data`；
+  - 确认上传/URL 已成功转换为图片文件并附在 `image` 字段。
 
 ## 8. 变更与发布流程
 
