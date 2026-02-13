@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>本地 LLM 画图前端</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23cf4f2f'/%3E%3Ccircle cx='32' cy='32' r='14' fill='%23fff6df'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a" aria-hidden="true"></div>
+    <div class="bg-shape bg-shape-b" aria-hidden="true"></div>
+
+    <header class="app-header">
+      <h1>LLM 画图控制台</h1>
+      <p>OpenAI 兼容接口 · 模型自动拉取 · 本地画廊保存</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel panel-controls">
+        <form id="generate-form" class="control-form">
+          <div class="row">
+            <label for="mode">接口模式</label>
+            <select id="mode" name="mode">
+              <option value="chat">chat/completions</option>
+              <option value="images">images/generations</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <label for="baseUrl">Base URL</label>
+            <div class="inline-field">
+              <input id="baseUrl" name="baseUrl" type="url" required />
+              <button id="connect-btn" type="button" class="ghost">连接 URL</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <label for="apiKey">API Key</label>
+            <input id="apiKey" name="apiKey" type="text" required />
+            <label class="checkbox-row">
+              <input id="rememberApiKey" name="rememberApiKey" type="checkbox" />
+              <span>记住 API Key（不推荐）</span>
+            </label>
+          </div>
+
+          <div class="row">
+            <label for="localToken">Local Token（用于本地写接口鉴权）</label>
+            <input
+              id="localToken"
+              name="localToken"
+              type="password"
+              placeholder="对应服务端 LOCAL_API_TOKEN"
+            />
+          </div>
+
+          <div class="row">
+            <label for="proxyBaseUrl">画廊服务 URL</label>
+            <input id="proxyBaseUrl" name="proxyBaseUrl" type="url" required />
+          </div>
+
+          <div class="row">
+            <label for="modelSelect">Model（下拉选择）</label>
+            <select id="modelSelect" name="modelSelect">
+              <option value="">请先点击“连接 URL”加载模型列表</option>
+            </select>
+            <label for="modelManual">Model（手动输入，可覆盖下拉）</label>
+            <input
+              id="modelManual"
+              name="modelManual"
+              type="text"
+              placeholder="可手动输入模型名，优先级高于下拉选择"
+            />
+            <small id="model-hint" class="field-hint">点击“连接 URL”可获取模型列表</small>
+          </div>
+
+          <div class="row">
+            <label for="prompt">Prompt</label>
+            <textarea
+              id="prompt"
+              name="prompt"
+              rows="6"
+              placeholder="请输入你要生成的图像描述..."
+              required
+            ></textarea>
+          </div>
+
+          <fieldset class="group">
+            <legend>基础参数</legend>
+            <div class="row">
+              <label for="size">尺寸</label>
+              <select id="size" name="size">
+                <option value="512x512">512x512</option>
+                <option value="768x768">768x768</option>
+                <option value="1024x1024">1024x1024</option>
+                <option value="1024x1792">1024x1792</option>
+                <option value="1792x1024">1792x1024</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="n">数量</label>
+              <input id="n" name="n" type="number" min="1" max="8" step="1" />
+            </div>
+          </fieldset>
+
+          <fieldset class="group">
+            <legend>高级参数（可选）</legend>
+            <div class="row">
+              <label for="seed">Seed</label>
+              <input id="seed" name="seed" type="number" step="1" placeholder="留空自动" />
+            </div>
+            <div class="row mode-chat-only">
+              <label for="temperature">Temperature</label>
+              <input
+                id="temperature"
+                name="temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                placeholder="例如 0.7"
+              />
+            </div>
+            <div class="row">
+              <label for="guidance">Guidance</label>
+              <input
+                id="guidance"
+                name="guidance"
+                type="number"
+                min="0"
+                step="0.1"
+                placeholder="例如 7"
+              />
+            </div>
+          </fieldset>
+
+          <div class="actions">
+            <button id="submit-btn" type="submit">生成图像</button>
+            <button id="clear-btn" type="button" class="ghost">清空结果</button>
+            <button id="reset-btn" type="button" class="ghost">恢复默认</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel panel-results">
+        <div class="result-head">
+          <h2>结果与画廊</h2>
+          <span id="result-count" class="count">0 张</span>
+        </div>
+
+        <div id="status" class="status" role="status" aria-live="polite">
+          就绪：先连接模型，然后生成图像。
+        </div>
+        <div id="error" class="error" hidden></div>
+
+        <div id="protocol-tip" class="tip" hidden>
+          当前页面通过 <code>file://</code> 打开，可能遇到 CORS 或剪贴板限制。建议使用
+          <code>start.bat</code> 启动。
+        </div>
+
+        <div class="tabs">
+          <button type="button" class="tab-btn active" data-tab="results">结果</button>
+          <button type="button" class="tab-btn" data-tab="gallery">画廊</button>
+        </div>
+
+        <section id="results-view" class="tab-view">
+          <div id="results" class="results-grid"></div>
+        </section>
+
+        <section id="gallery-view" class="tab-view" hidden>
+          <div class="gallery-tools">
+            <span id="gallery-count" class="count">0 张</span>
+            <button id="refresh-gallery-btn" type="button" class="ghost">刷新画廊</button>
+          </div>
+          <div id="gallery-grid" class="results-grid"></div>
+        </section>
+      </section>
+    </main>
+
+    <div id="preview-modal" class="preview-modal" hidden>
+      <div id="preview-backdrop" class="preview-backdrop" aria-hidden="true"></div>
+      <section class="preview-panel" role="dialog" aria-modal="true" aria-label="图像预览">
+        <button id="preview-close-btn" type="button" class="preview-close ghost">关闭</button>
+        <button
+          id="preview-prev-btn"
+          type="button"
+          class="preview-nav preview-prev"
+          aria-label="上一张"
+        >
+          ←
+        </button>
+        <div class="preview-image-wrap">
+          <img id="preview-image" alt="图像预览大图" />
+        </div>
+        <button
+          id="preview-next-btn"
+          type="button"
+          class="preview-nav preview-next"
+          aria-label="下一张"
+        >
+          →
+        </button>
+        <div class="preview-footer">
+          <span id="preview-meta" class="preview-meta"></span>
+          <button id="preview-download-btn" type="button" class="ghost">下载当前图</button>
+        </div>
+      </section>
+    </div>
+
+    <template id="image-card-template">
+      <article class="image-card">
+        <div class="image-wrap preview-target">
+          <img alt="生成图像预览" loading="lazy" />
+        </div>
+        <div class="image-meta">
+          <span class="source-tag"></span>
+          <span class="image-index"></span>
+        </div>
+        <div class="image-actions">
+          <button type="button" class="download-btn">下载</button>
+          <button type="button" class="copy-btn ghost">复制 URL</button>
+          <button type="button" class="save-btn ghost">保存到画廊</button>
+        </div>
+      </article>
+    </template>
+
+    <template id="gallery-card-template">
+      <article class="image-card">
+        <div class="image-wrap preview-target">
+          <img alt="画廊图像预览" loading="lazy" />
+        </div>
+        <div class="image-meta">
+          <span class="source-tag"></span>
+          <span class="image-index"></span>
+        </div>
+        <p class="gallery-prompt"></p>
+        <div class="image-actions">
+          <button type="button" class="download-btn">下载</button>
+          <button type="button" class="copy-btn ghost">复制 URL</button>
+          <button type="button" class="delete-btn ghost danger">删除</button>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

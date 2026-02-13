@@ -1,0 +1,4 @@
+node_modules/
+gallery/*
+!gallery/.gitkeep
+!gallery/index.json

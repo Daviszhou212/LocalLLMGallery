@@ -1,0 +1,28 @@
+{
+  "name": "llm-image-console",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local LLM image frontend with gallery storage and model fetch",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "check": "node --check server/index.js && node --check server/gallery-store.js && node --check server/image-fetcher.js && node --check server/constants.js && node --check server/errors.js",
+    "lint": "eslint . --max-warnings=0",
+    "format:check": "prettier --check .",
+    "test": "node --test --test-concurrency=1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1",
+    "prettier": "^3.6.2",
+    "supertest": "^7.1.4"
+  }
+}

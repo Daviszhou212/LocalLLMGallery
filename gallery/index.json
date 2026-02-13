@@ -1,0 +1,13 @@
+[
+  {
+    "id": "1770819089982-22e86d",
+    "filename": "20260211-221129-9f9f3a.jpg",
+    "path": "/gallery/20260211-221129-9f9f3a.jpg",
+    "prompt": "生成4K画质的显示风格的不知火舞，要非常清晰，毕竟有良好的光影。",
+    "model": "grok-imagine-1.0",
+    "source": "content",
+    "originKey": "url:http://127.0.0.1:8000/v1/files/image/users/c1e7bbe8-3cc8-4263-9bdc-95e879216d07/generated/b7dde8bc-c62e-444b-9782-3e6847a6ddd7/image.jpg",
+    "size": 206660,
+    "createdAt": "2026-02-11T14:11:29.982Z"
+  }
+]
